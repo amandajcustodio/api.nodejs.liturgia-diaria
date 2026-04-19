@@ -75,7 +75,7 @@ Configure credenciais do Firebase no ambiente (ADC/service account) antes de ini
 
 Com a API em execucao, acesse:
 
-- `http://localhost:3000/missallete/today`
+- `https://api-nodejs-liturgia-diaria.vercel.app/missallete/today`
 
 ## Possiveis respostas de erro
 
