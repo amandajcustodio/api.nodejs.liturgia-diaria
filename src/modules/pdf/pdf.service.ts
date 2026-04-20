@@ -103,7 +103,17 @@ export class PdfService {
   }
 
   private looksLikeBlockedPage(html: string): boolean {
-    return /access denied|forbidden|cloudflare|captcha|security check|attention required|verify you are human/i.test(html);
+    const blockedSignals = /access denied|forbidden|cloudflare|security check|attention required|verify you are human|captcha/i;
+
+    if (!blockedSignals.test(html)) {
+      return false;
+    }
+
+    // Some valid WordPress pages include "captcha" in scripts/settings.
+    // Treat as blocked only when known content markers are missing.
+    const hasExpectedContent = /wp-content|<article|class="entry|folheto|\.pdf|\d{2}[\.\/-]\d{2}[\.\/-]\d{4}/i.test(html);
+
+    return !hasExpectedContent;
   }
 
   private logExternalFetchIssue(reason: string, url: string, status?: number): void {

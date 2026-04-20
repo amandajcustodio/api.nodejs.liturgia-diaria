@@ -70,8 +70,9 @@ export class MissalleteService {
 
   private async getSundayToday(today: DateParts): Promise<MissalleteResponse> {
     const todayIsoDate = formatIsoDate(today);
+    const pdfService = new PdfService();
     const [pdfMissallete, htmlMissallete] = await Promise.all([
-      new PdfService().getToday(),
+      pdfService.getToday(),
       new LiturgyService().getByIsoDate(todayIsoDate)
     ]);
 
@@ -79,11 +80,13 @@ export class MissalleteService {
       return { ...pdfMissallete, metadata: pdfMissallete.metadata ?? htmlMissallete?.metadata };
     }
 
-    if (htmlMissallete) {
-      return htmlMissallete;
+    const sundayPdfMissallete = await pdfService.getNextSunday();
+
+    if (sundayPdfMissallete) {
+      return { ...sundayPdfMissallete, metadata: sundayPdfMissallete.metadata ?? htmlMissallete?.metadata };
     }
 
-    throw new NotFoundError("Nao foi possivel encontrar folheto em PDF ou liturgia do dia.");
+    throw new NotFoundError("Folheto de domingo ainda nao disponivel.");
   }
 
   private async getSaturdayChoices(saturday: DateParts): Promise<MissalleteResponse | null> {
@@ -101,7 +104,7 @@ export class MissalleteService {
 
     const sundayMissallete = sundayPdfMissallete
       ? { ...sundayPdfMissallete, metadata: sundayPdfMissallete.metadata ?? sundayHtmlMissallete?.metadata }
-      : sundayHtmlMissallete;
+      : null;
 
     if (saturdayMissallete && sundayMissallete) {
       return {
