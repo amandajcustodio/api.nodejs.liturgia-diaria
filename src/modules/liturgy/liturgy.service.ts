@@ -1,22 +1,15 @@
 import { Missallete, LiturgyMetadata } from "../../shared/models/base.model";
-import { getApiNow } from "../../shared/utils/api-date.util";
-
-type DateParts = {
-  year: number,
-  month: number,
-  day: number
-}
+import { addDays, DateParts, formatIsoDate, getApiTodayDateParts } from "../../shared/utils/api-date.util";
 
 export class LiturgyService {
   private static readonly BASE_URL = "https://www.liriocatolico.com.br/liturgia_diaria/dia";
-  private static readonly SOURCE_TIMEZONE = "America/Sao_Paulo";
 
   public async getToday(): Promise<Missallete | null> {
-    const baseDate = this.getCurrentDateInTimeZone(LiturgyService.SOURCE_TIMEZONE);
+    const baseDate = getApiTodayDateParts();
     const fallbackOffsets = [0, -1, 1];
 
     for (const offset of fallbackOffsets) {
-      const date = this.addDays(baseDate, offset);
+      const date = addDays(baseDate, offset);
       const missallete = await this.getByDateParts(date);
 
       if (missallete) {
@@ -106,7 +99,7 @@ export class LiturgyService {
 
     return {
       type: "html",
-      date: this.formatToIsoDate(date),
+      date: formatIsoDate(date),
       content,
       metadata
     };
@@ -146,38 +139,4 @@ export class LiturgyService {
     return [...new Set(candidates)];
   }
 
-  private getCurrentDateInTimeZone(timeZone: string): DateParts {
-    const formatter = new Intl.DateTimeFormat("en-CA", {
-      timeZone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit"
-    });
-
-    const parts = formatter.formatToParts(getApiNow());
-    const year = Number(parts.find((part) => part.type === "year")?.value);
-    const month = Number(parts.find((part) => part.type === "month")?.value);
-    const day = Number(parts.find((part) => part.type === "day")?.value);
-
-    return { year, month, day };
-  }
-
-  private addDays(date: DateParts, amount: number): DateParts {
-    const utcDate = new Date(Date.UTC(date.year, date.month - 1, date.day));
-    utcDate.setUTCDate(utcDate.getUTCDate() + amount);
-
-    return {
-      year: utcDate.getUTCFullYear(),
-      month: utcDate.getUTCMonth() + 1,
-      day: utcDate.getUTCDate()
-    };
-  }
-
-  private formatToIsoDate(date: DateParts): string {
-    const day = String(date.day).padStart(2, "0");
-    const month = String(date.month).padStart(2, "0");
-    const year = String(date.year);
-
-    return `${year}-${month}-${day}`;
-  }
 }

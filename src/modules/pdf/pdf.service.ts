@@ -1,20 +1,34 @@
 import { Missallete } from "../../shared/models/base.model";
-import { getApiNow } from "../../shared/utils/api-date.util";
+import {
+  addDays,
+  API_TIMEZONE,
+  DateParts,
+  formatIsoDate,
+  getApiTodayDateParts,
+  getDatePartsInTimeZone,
+  getWeekday
+} from "../../shared/utils/api-date.util";
 
 export class PdfService {
   private static readonly FOLHETO_URL = "https://paroquiasantalucia.com.br/categorias/folheto/";
 
   public async getToday(): Promise<Missallete | null> {
-    return this.getByDate(getApiNow());
+    return this.getByDateParts(getApiTodayDateParts());
   }
 
   public async getNextSunday(): Promise<Missallete | null> {
-    return this.getByDate(this.getNextSundayDate(getApiNow()));
+    const today = getApiTodayDateParts();
+    const dayOfWeek = getWeekday(today);
+    const daysUntilSunday = (7 - dayOfWeek) % 7;
+    return this.getByDateParts(addDays(today, daysUntilSunday));
   }
 
   public async getByDate(date: Date): Promise<Missallete | null> {
-    const targetDate = new Date(date);
-    const formattedDate = this.formatToDdMmYyyy(targetDate, ".");
+    return this.getByDateParts(getDatePartsInTimeZone(new Date(date), API_TIMEZONE));
+  }
+
+  public async getByDateParts(date: DateParts): Promise<Missallete | null> {
+    const formattedDate = this.formatToDdMmYyyy(date, ".");
 
     const categoryHtml = await this.fetchHtml(PdfService.FOLHETO_URL);
 
@@ -42,18 +56,9 @@ export class PdfService {
 
     return {
       type: "pdf",
-      date: this.formatToIsoDate(targetDate),
+      date: formatIsoDate(date),
       content: pdfUrl
     };
-  }
-
-  private getNextSundayDate(baseDate: Date): Date {
-    const sundayDate = new Date(baseDate);
-    const dayOfWeek = sundayDate.getDay();
-    const daysUntilSunday = (7 - dayOfWeek) % 7;
-    sundayDate.setDate(sundayDate.getDate() + daysUntilSunday);
-
-    return sundayDate;
   }
 
   private async fetchHtml(url: string): Promise<string | null> {
@@ -112,19 +117,11 @@ export class PdfService {
     return new URL(url, baseUrl).toString();
   }
 
-  private formatToDdMmYyyy(date: Date, separator: "." | "/"): string {
-    const day = String(date.getDate()).padStart(2, "0");
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const year = String(date.getFullYear());
+  private formatToDdMmYyyy(date: DateParts, separator: "." | "/"): string {
+    const day = String(date.day).padStart(2, "0");
+    const month = String(date.month).padStart(2, "0");
+    const year = String(date.year);
 
     return `${day}${separator}${month}${separator}${year}`;
-  }
-
-  private formatToIsoDate(date: Date): string {
-    const day = String(date.getDate()).padStart(2, "0");
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const year = String(date.getFullYear());
-
-    return `${year}-${month}-${day}`;
   }
 }
