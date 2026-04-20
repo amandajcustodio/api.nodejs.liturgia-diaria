@@ -120,7 +120,14 @@ export class LiturgyService {
   }
 
   private isValidLiturgyHtml(html: string): boolean {
-    return /liturgia\s+di[aá]ria/i.test(html);
+    if (/class="liturgy-title"/i.test(html)) {
+      return true;
+    }
+
+    const hasMainContent = /<main\b[^>]*>[\s\S]*<\/main>/i.test(html);
+    const hasReadings = /primeira\s+leitura|salmo\s+responsorial|evangelho/i.test(html);
+
+    return hasMainContent && hasReadings;
   }
 
   private buildLiturgyUrls(date: DateParts): string[] {

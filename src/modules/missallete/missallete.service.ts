@@ -17,6 +17,7 @@ export class MissalleteService {
 
   public async getToday(): Promise<MissalleteResponse> {
     const today = getApiTodayDateParts();
+    const liturgyService = new LiturgyService();
 
     if (this.isSaturday(today)) {
       const saturdayChoices = await this.getSaturdayChoices(today);
@@ -36,13 +37,35 @@ export class MissalleteService {
       return pdfMissallete;
     }
 
-    const liturgyMissallete = await new LiturgyService().getToday();
+    const liturgyMissallete = await liturgyService.getToday();
 
     if (liturgyMissallete) {
       return liturgyMissallete;
     }
 
+    const recentLiturgy = await this.getRecentAvailableLiturgy(today, liturgyService);
+
+    if (recentLiturgy) {
+      return recentLiturgy;
+    }
+
     throw new NotFoundError("Nao foi possivel encontrar folheto em PDF ou liturgia do dia.");
+  }
+
+  private async getRecentAvailableLiturgy(today: DateParts, liturgyService: LiturgyService): Promise<MissalleteResponse | null> {
+    const fallbackOffsets = [-1, -2, -3, -4, -5, -6, -7, 1];
+
+    for (const offset of fallbackOffsets) {
+      const targetDate = addDays(today, offset);
+      const targetIsoDate = formatIsoDate(targetDate);
+      const missallete = await liturgyService.getByIsoDate(targetIsoDate);
+
+      if (missallete) {
+        return missallete;
+      }
+    }
+
+    return null;
   }
 
   private async getSundayToday(today: DateParts): Promise<MissalleteResponse> {
