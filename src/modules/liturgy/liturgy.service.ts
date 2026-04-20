@@ -112,7 +112,15 @@ export class LiturgyService {
   }
 
   private looksLikeBlockedPage(html: string): boolean {
-    return /access denied|forbidden|cloudflare|captcha|robot|security check/i.test(html);
+    const blockedSignals = /access denied|forbidden|cloudflare|captcha|security check|attention required|verify you are human/i;
+
+    if (!blockedSignals.test(html)) {
+      return false;
+    }
+
+    const hasLiturgyMarkers = /class="liturgy-title"|primeira\s+leitura|salmo\s+responsorial|evangelho/i.test(html);
+
+    return !hasLiturgyMarkers;
   }
 
   private logExternalFetchIssue(reason: string, url: string, status?: number): void {

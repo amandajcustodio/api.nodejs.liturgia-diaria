@@ -103,7 +103,7 @@ export class PdfService {
   }
 
   private looksLikeBlockedPage(html: string): boolean {
-    return /access denied|forbidden|cloudflare|captcha|robot|security check/i.test(html);
+    return /access denied|forbidden|cloudflare|captcha|security check|attention required|verify you are human/i.test(html);
   }
 
   private logExternalFetchIssue(reason: string, url: string, status?: number): void {
