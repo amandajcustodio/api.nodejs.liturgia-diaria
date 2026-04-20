@@ -1,11 +1,20 @@
 import { Missallete } from "../../shared/models/base.model";
+import { getApiNow } from "../../shared/utils/api-date.util";
 
 export class PdfService {
   private static readonly FOLHETO_URL = "https://paroquiasantalucia.com.br/categorias/folheto/";
 
   public async getToday(): Promise<Missallete | null> {
-    const today = new Date();
-    const formattedDate = this.formatToDdMmYyyy(today, ".");
+    return this.getByDate(getApiNow());
+  }
+
+  public async getNextSunday(): Promise<Missallete | null> {
+    return this.getByDate(this.getNextSundayDate(getApiNow()));
+  }
+
+  public async getByDate(date: Date): Promise<Missallete | null> {
+    const targetDate = new Date(date);
+    const formattedDate = this.formatToDdMmYyyy(targetDate, ".");
 
     const categoryHtml = await this.fetchHtml(PdfService.FOLHETO_URL);
 
@@ -33,9 +42,18 @@ export class PdfService {
 
     return {
       type: "pdf",
-      date: this.formatToIsoDate(today),
+      date: this.formatToIsoDate(targetDate),
       content: pdfUrl
     };
+  }
+
+  private getNextSundayDate(baseDate: Date): Date {
+    const sundayDate = new Date(baseDate);
+    const dayOfWeek = sundayDate.getDay();
+    const daysUntilSunday = (7 - dayOfWeek) % 7;
+    sundayDate.setDate(sundayDate.getDate() + daysUntilSunday);
+
+    return sundayDate;
   }
 
   private async fetchHtml(url: string): Promise<string | null> {

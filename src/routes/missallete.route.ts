@@ -5,3 +5,4 @@ import { MissalleteController } from "../modules/missallete/missallete.controlle
 export const missalleteRoute = Router();
 
 missalleteRoute.get("/missallete/today", asyncHandler(MissalleteController.getToday));
+missalleteRoute.get("/missallete/sunday", asyncHandler(MissalleteController.getSunday));
