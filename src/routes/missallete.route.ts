@@ -6,3 +6,4 @@ export const missalleteRoute = Router();
 
 missalleteRoute.get("/missallete/today", asyncHandler(MissalleteController.getToday));
 missalleteRoute.get("/missallete/sunday", asyncHandler(MissalleteController.getSunday));
+missalleteRoute.get("/missallete/tomorrow-liturgy", asyncHandler(MissalleteController.getTomorrowLiturgy));

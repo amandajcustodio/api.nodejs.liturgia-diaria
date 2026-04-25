@@ -15,6 +15,18 @@ export class MissalleteService {
     throw new NotFoundError("Folheto de domingo ainda nao disponivel.");
   }
 
+  public async getTomorrowLiturgy(): Promise<MissalleteResponse> {
+    const tomorrow = addDays(getApiTodayDateParts(), 1);
+    const tomorrowIsoDate = formatIsoDate(tomorrow);
+    const tomorrowLiturgy = await new LiturgyService().getByIsoDate(tomorrowIsoDate);
+
+    if (tomorrowLiturgy) {
+      return tomorrowLiturgy;
+    }
+
+    throw new NotFoundError("Liturgia de domingo ainda nao disponivel.");
+  }
+
   public async getToday(): Promise<MissalleteResponse> {
     const today = getApiTodayDateParts();
     const liturgyService = new LiturgyService();
@@ -104,7 +116,7 @@ export class MissalleteService {
 
     const sundayMissallete = sundayPdfMissallete
       ? { ...sundayPdfMissallete, metadata: sundayPdfMissallete.metadata ?? sundayHtmlMissallete?.metadata }
-      : null;
+      : sundayHtmlMissallete;
 
     if (saturdayMissallete && sundayMissallete) {
       return {
