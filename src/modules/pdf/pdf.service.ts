@@ -9,8 +9,22 @@ import {
   getWeekday
 } from "../../shared/utils/api-date.util";
 
+type PdfSource = {
+  categoryUrl: string,
+  datePattern: "dd.mm.yyyy" | "ddmmyy"
+}
+
 export class PdfService {
-  private static readonly FOLHETO_URL = "https://paroquiasantalucia.com.br/categorias/folheto/";
+  private static readonly PDF_SOURCES: PdfSource[] = [
+    {
+      categoryUrl: "https://paroquiasantalucia.com.br/categorias/folheto/",
+      datePattern: "dd.mm.yyyy"
+    },
+    {
+      categoryUrl: "https://paroquiasaojosebp.com/categorias/folheto-liturgico/",
+      datePattern: "ddmmyy"
+    }
+  ];
   private static readonly REQUEST_TIMEOUT_MS = 12000;
 
   public async getToday(): Promise<Missallete | null> {
@@ -29,27 +43,39 @@ export class PdfService {
   }
 
   public async getByDateParts(date: DateParts): Promise<Missallete | null> {
-    const formattedDate = this.formatToDdMmYyyy(date, ".");
+    for (const source of PdfService.PDF_SOURCES) {
+      const missallete = await this.getByDatePartsFromSource(date, source);
 
-    const categoryHtml = await this.fetchHtml(PdfService.FOLHETO_URL);
+      if (missallete) {
+        return missallete;
+      }
+    }
+
+    return null;
+  }
+
+  private async getByDatePartsFromSource(date: DateParts, source: PdfSource): Promise<Missallete | null> {
+    const formattedDate = this.formatDateForSource(date, source.datePattern);
+
+    const categoryHtml = await this.fetchHtml(source.categoryUrl, source.categoryUrl);
 
     if (!categoryHtml) {
       return null;
     }
 
-    const postUrl = this.extractPostUrlByDate(categoryHtml, formattedDate);
+    const postUrl = this.extractPostUrlByDate(categoryHtml, formattedDate, source.categoryUrl);
 
     if (!postUrl) {
       return null;
     }
 
-    const postHtml = await this.fetchHtml(postUrl);
+    const postHtml = await this.fetchHtml(postUrl, source.categoryUrl);
 
     if (!postHtml) {
       return null;
     }
 
-    const pdfUrl = this.extractFirstPdfUrl(postHtml);
+    const pdfUrl = this.extractFirstPdfUrl(postHtml, source.categoryUrl);
 
     if (!pdfUrl) {
       return null;
@@ -62,7 +88,7 @@ export class PdfService {
     };
   }
 
-  private async fetchHtml(url: string): Promise<string | null> {
+  private async fetchHtml(url: string, refererUrl: string): Promise<string | null> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
       controller.abort();
@@ -76,7 +102,7 @@ export class PdfService {
           "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
           "Cache-Control": "no-cache",
           Pragma: "no-cache",
-          Referer: PdfService.FOLHETO_URL,
+          Referer: refererUrl,
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
         }
       });
@@ -125,7 +151,13 @@ export class PdfService {
     console.warn(`[PdfService] ${reason}${statusLabel} url=${url}`);
   }
 
-  private extractPostUrlByDate(html: string, formattedDate: string): string | null {
+  private extractPostUrlByDate(html: string, formattedDate: string, baseUrl: string): string | null {
+    const dataHrefMatch = new RegExp(`data-href=["']([^"']*${formattedDate}[^"']*)["']`, "i").exec(html);
+
+    if (dataHrefMatch?.[1]) {
+      return this.toAbsoluteUrl(dataHrefMatch[1], baseUrl);
+    }
+
     const anchorRegex = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
 
     let match = anchorRegex.exec(html);
@@ -134,25 +166,38 @@ export class PdfService {
       const href = match[1] ?? "";
       const anchorText = this.stripTags(match[2] ?? "");
 
-      if (anchorText.includes(formattedDate)) {
-        return this.toAbsoluteUrl(href, PdfService.FOLHETO_URL);
+      if (href.includes(formattedDate) || anchorText.includes(formattedDate)) {
+        return this.toAbsoluteUrl(href, baseUrl);
       }
 
       match = anchorRegex.exec(html);
     }
 
+    const postUrlMatch = new RegExp(`https?:\\/\\/[^"'\\s>]*${formattedDate}[^"'\\s>]*\\/?`, "i").exec(html);
+
+    if (postUrlMatch?.[0]) {
+      return this.toAbsoluteUrl(postUrlMatch[0], baseUrl);
+    }
+
     return null;
   }
 
-  private extractFirstPdfUrl(html: string): string | null {
-    const pdfRegex = /href=["']([^"']+\.pdf(?:\?[^"']*)?)["']/i;
-    const match = pdfRegex.exec(html);
+  private extractFirstPdfUrl(html: string, baseUrl: string): string | null {
+    const normalizedHtml = html.replace(/\\\//g, "/");
+    const pdfAttributeMatchers = [
+      /href=["']([^"']+\.pdf(?:\?[^"']*)?)["']/i,
+      /["']source["']\s*:\s*["']([^"']+\.pdf(?:\?[^"']*)?)["']/i
+    ];
 
-    if (!match || !match[1]) {
-      return null;
+    for (const matcher of pdfAttributeMatchers) {
+      const match = matcher.exec(normalizedHtml);
+
+      if (match?.[1]) {
+        return this.toAbsoluteUrl(match[1], baseUrl);
+      }
     }
 
-    return this.toAbsoluteUrl(match[1], PdfService.FOLHETO_URL);
+    return null;
   }
 
   private stripTags(value: string): string {
@@ -167,11 +212,17 @@ export class PdfService {
     return new URL(url, baseUrl).toString();
   }
 
-  private formatToDdMmYyyy(date: DateParts, separator: "." | "/"): string {
+  private formatDateForSource(date: DateParts, datePattern: PdfSource["datePattern"]): string {
     const day = String(date.day).padStart(2, "0");
     const month = String(date.month).padStart(2, "0");
     const year = String(date.year);
 
-    return `${day}${separator}${month}${separator}${year}`;
+    if (datePattern === "dd.mm.yyyy") {
+      return `${day}.${month}.${year}`;
+    }
+
+    const shortYear = String(date.year % 100).padStart(2, "0");
+
+    return `${day}${month}${shortYear}`;
   }
 }
