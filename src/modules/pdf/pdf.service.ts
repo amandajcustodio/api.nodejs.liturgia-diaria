@@ -15,16 +15,10 @@ type PdfSource = {
 }
 
 export class PdfService {
-  private static readonly PDF_SOURCES: PdfSource[] = [
-    {
-      categoryUrl: "https://paroquiasantalucia.com.br/categorias/folheto/",
-      datePattern: "dd.mm.yyyy"
-    },
-    {
-      categoryUrl: "https://paroquiasaojosebp.com/categorias/folheto-liturgico/",
-      datePattern: "ddmmyy"
-    }
-  ];
+  private static readonly PDF_SOURCE: PdfSource = {
+    categoryUrl: "https://paroquiasaojosebp.com/categorias/folheto-liturgico/",
+    datePattern: "ddmmyy"
+  };
   private static readonly REQUEST_TIMEOUT_MS = 12000;
 
   public async getToday(): Promise<Missallete | null> {
@@ -43,12 +37,15 @@ export class PdfService {
   }
 
   public async getByDateParts(date: DateParts): Promise<Missallete | null> {
-    for (const source of PdfService.PDF_SOURCES) {
-      const missallete = await this.getByDatePartsFromSource(date, source);
+    const source = PdfService.PDF_SOURCE;
+    const missallete = await this.getByDatePartsFromSource(date, source);
 
-      if (missallete) {
-        return missallete;
-      }
+    if (missallete) {
+      return missallete;
+    }
+
+    if (this.isSunday(date) && this.isDateWithinDaysFromToday(date, 2)) {
+      return this.getSundayFallbackByCategory(date, source);
     }
 
     return null;
@@ -64,6 +61,38 @@ export class PdfService {
     }
 
     const postUrl = this.extractPostUrlByDate(categoryHtml, formattedDate, source.categoryUrl);
+
+    if (!postUrl) {
+      return null;
+    }
+
+    const postHtml = await this.fetchHtml(postUrl, source.categoryUrl);
+
+    if (!postHtml) {
+      return null;
+    }
+
+    const pdfUrl = this.extractFirstPdfUrl(postHtml, source.categoryUrl);
+
+    if (!pdfUrl) {
+      return null;
+    }
+
+    return {
+      type: "pdf",
+      date: formatIsoDate(date),
+      content: pdfUrl
+    };
+  }
+
+  private async getSundayFallbackByCategory(date: DateParts, source: PdfSource): Promise<Missallete | null> {
+    const categoryHtml = await this.fetchHtml(source.categoryUrl, source.categoryUrl);
+
+    if (!categoryHtml) {
+      return null;
+    }
+
+    const postUrl = this.extractSundayPostUrlFallback(categoryHtml, date, source);
 
     if (!postUrl) {
       return null;
@@ -182,6 +211,50 @@ export class PdfService {
     return null;
   }
 
+  private extractSundayPostUrlFallback(html: string, date: DateParts, source: PdfSource): string | null {
+    const dayToken = this.formatDateForSource(date, source.datePattern);
+    const alternativeDayToken = `${String(date.day).padStart(2, "0")}.${String(date.month).padStart(2, "0")}.${date.year}`;
+    const anchorRegex = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+    const seenUrls = new Set<string>();
+    const sundayCandidates: string[] = [];
+
+    let match = anchorRegex.exec(html);
+
+    while (match) {
+      const href = match[1] ?? "";
+      const anchorText = this.stripTags(match[2] ?? "");
+      const absoluteHref = this.toAbsoluteUrl(href, source.categoryUrl);
+
+      if (seenUrls.has(absoluteHref)) {
+        match = anchorRegex.exec(html);
+        continue;
+      }
+
+      seenUrls.add(absoluteHref);
+
+      if (absoluteHref.includes("/categorias/folheto-liturgico")) {
+        match = anchorRegex.exec(html);
+        continue;
+      }
+
+      const normalized = this.normalizeText(`${anchorText} ${absoluteHref}`);
+
+      if (!normalized.includes("folheto") || !normalized.includes("domingo")) {
+        match = anchorRegex.exec(html);
+        continue;
+      }
+
+      if (normalized.includes(dayToken.toLowerCase()) || normalized.includes(alternativeDayToken.toLowerCase())) {
+        return absoluteHref;
+      }
+
+      sundayCandidates.push(absoluteHref);
+      match = anchorRegex.exec(html);
+    }
+
+    return sundayCandidates[0] ?? null;
+  }
+
   private extractFirstPdfUrl(html: string, baseUrl: string): string | null {
     const normalizedHtml = html.replace(/\\\//g, "/");
     const pdfAttributeMatchers = [
@@ -210,6 +283,26 @@ export class PdfService {
 
   private toAbsoluteUrl(url: string, baseUrl: string): string {
     return new URL(url, baseUrl).toString();
+  }
+
+  private normalizeText(value: string): string {
+    return value
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+  }
+
+  private isSunday(date: DateParts): boolean {
+    return getWeekday(date) === 0;
+  }
+
+  private isDateWithinDaysFromToday(date: DateParts, maxDaysDistance: number): boolean {
+    const today = getApiTodayDateParts();
+    const currentDate = Date.UTC(today.year, today.month - 1, today.day);
+    const targetDate = Date.UTC(date.year, date.month - 1, date.day);
+    const dayDifference = Math.floor((targetDate - currentDate) / (24 * 60 * 60 * 1000));
+
+    return dayDifference >= 0 && dayDifference <= maxDaysDistance;
   }
 
   private formatDateForSource(date: DateParts, datePattern: PdfSource["datePattern"]): string {
