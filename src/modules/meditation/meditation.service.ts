@@ -3,7 +3,7 @@ import { DateParts, formatIsoDate } from "../../shared/utils/api-date.util";
 
 export class MeditationService {
   private static readonly BASE_URL = "https://padrepauloricardo.org/liturgia";
-  private static readonly REQUEST_TIMEOUT_MS = 12000;
+  private static readonly REQUEST_TIMEOUT_MS = process.env.VERCEL ? 8000 : 12000;
 
   public async getByIsoDate(isoDate: string): Promise<MeditationContent | null> {
     const [yearRaw, monthRaw, dayRaw] = isoDate.split("-");
@@ -92,9 +92,10 @@ export class MeditationService {
   }
 
   private looksLikeBlockedPage(html: string): boolean {
-    const blockedSignals = /access denied|forbidden|cloudflare|security check|attention required|verify you are human|captcha/i;
+    const challengePage = /cf-browser-verification|challenge-platform|just a moment|verify you are human|attention required/i.test(html);
+    const accessDenied = /access denied|forbidden|security check/i.test(html);
 
-    if (!blockedSignals.test(html)) {
+    if (!challengePage && !accessDenied) {
       return false;
     }
 

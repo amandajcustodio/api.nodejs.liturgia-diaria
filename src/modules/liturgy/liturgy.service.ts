@@ -4,22 +4,16 @@ import { addDays, DateParts, formatIsoDate, getApiTodayDateParts } from "../../s
 export class LiturgyService {
   private static readonly LIRIO_BASE_URL = "https://www.liriocatolico.com.br/liturgia_diaria/dia";
   private static readonly PADRE_PAULO_RICARDO_BASE_URL = "https://padrepauloricardo.org/liturgia";
-  private static readonly REQUEST_TIMEOUT_MS = 12000;
+  private static readonly REQUEST_TIMEOUT_MS = process.env.VERCEL ? 8000 : 12000;
 
   public async getToday(): Promise<Missallete | null> {
     const baseDate = getApiTodayDateParts();
     const fallbackOffsets = [0, -1, 1];
+    const missalettes = await Promise.all(
+      fallbackOffsets.map((offset) => this.getByDateParts(addDays(baseDate, offset)))
+    );
 
-    for (const offset of fallbackOffsets) {
-      const date = addDays(baseDate, offset);
-      const missallete = await this.getByDateParts(date);
-
-      if (missallete) {
-        return missallete;
-      }
-    }
-
-    return null;
+    return missalettes.find((missallete) => missallete !== null) ?? null;
   }
 
   public async getByIsoDate(isoDate: string): Promise<Missallete | null> {
@@ -133,6 +127,31 @@ export class LiturgyService {
     }
 
     if (!readingBlocks.length) {
+      const fallbackRegex = /<div class="reading-type">([^<]+)<\/div>[\s\S]*?<div class="reading-body[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/gi;
+      let fallbackMatch = fallbackRegex.exec(html);
+
+      while (fallbackMatch) {
+        const type = this.stripTags(fallbackMatch[1] ?? "");
+
+        if (/medita/i.test(type)) {
+          fallbackMatch = fallbackRegex.exec(html);
+          continue;
+        }
+
+        const body = this.sanitizeReadingHtml(fallbackMatch[2] ?? "");
+        readingBlocks.push(`
+          <article class="reading">
+            <header>
+              <h3 class="reading-title">${type}</h3>
+            </header>
+            <div class="reading-content">${body}</div>
+          </article>
+        `);
+        fallbackMatch = fallbackRegex.exec(html);
+      }
+    }
+
+    if (!readingBlocks.length) {
       return null;
     }
 
@@ -157,6 +176,10 @@ export class LiturgyService {
           "Cache-Control": "no-cache",
           Pragma: "no-cache",
           Referer: refererUrl,
+          "Sec-Fetch-Dest": "document",
+          "Sec-Fetch-Mode": "navigate",
+          "Sec-Fetch-Site": "none",
+          "Upgrade-Insecure-Requests": "1",
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
         }
       });
@@ -183,13 +206,14 @@ export class LiturgyService {
   }
 
   private looksLikeBlockedPage(html: string): boolean {
-    const blockedSignals = /access denied|forbidden|cloudflare|security check|attention required|verify you are human|captcha/i;
+    const challengePage = /cf-browser-verification|challenge-platform|just a moment|verify you are human|attention required/i.test(html);
+    const accessDenied = /access denied|forbidden|security check/i.test(html);
 
-    if (!blockedSignals.test(html)) {
+    if (!challengePage && !accessDenied) {
       return false;
     }
 
-    const hasLiturgyMarkers = /class="liturgy-title"|primeira\s+leitura|salmo\s+responsorial|evangelho|reading-type/i.test(html);
+    const hasLiturgyMarkers = /class="liturgy-title"|primeira\s+leitura|salmo\s+responsorial|evangelho|reading-type|gon\.episode/i.test(html);
 
     return !hasLiturgyMarkers;
   }
@@ -204,13 +228,12 @@ export class LiturgyService {
   }
 
   private async getByDateParts(date: DateParts): Promise<Missallete | null> {
-    const lirioMissallete = await this.getByDatePartsFromLirio(date);
+    const [pprMissallete, lirioMissallete] = await Promise.all([
+      this.getByDatePartsFromPadrePauloRicardo(date),
+      this.getByDatePartsFromLirio(date)
+    ]);
 
-    if (lirioMissallete) {
-      return lirioMissallete;
-    }
-
-    return this.getByDatePartsFromPadrePauloRicardo(date);
+    return pprMissallete ?? lirioMissallete;
   }
 
   private async getByDatePartsFromLirio(date: DateParts): Promise<Missallete | null> {
@@ -254,16 +277,11 @@ export class LiturgyService {
 
   private async fetchFirstAvailableLirioHtml(date: DateParts): Promise<string | null> {
     const urls = this.buildLirioUrls(date);
+    const htmlPages = await Promise.all(
+      urls.map((url) => this.fetchHtml(url, "https://www.liriocatolico.com.br/"))
+    );
 
-    for (const url of urls) {
-      const html = await this.fetchHtml(url, "https://www.liriocatolico.com.br/");
-
-      if (html && this.isValidLirioLiturgyHtml(html)) {
-        return html;
-      }
-    }
-
-    return null;
+    return htmlPages.find((html) => html && this.isValidLirioLiturgyHtml(html)) ?? null;
   }
 
   private isValidLirioLiturgyHtml(html: string): boolean {
