@@ -1,6 +1,10 @@
 import { NextFunction, Request, Response } from "express";
 import { PushSubscription } from "web-push";
 import { PushService } from "./push.service";
+import {
+  runSundayBookletAvailabilityCheck,
+  runSundayBookletDailyReminders,
+} from "./push-cron.service";
 
 export class PushController {
   public static async subscribe(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -30,5 +34,32 @@ export class PushController {
 
     await new PushService().removeSubscription(endpoint);
     res.status(200).json({ message: "Inscrição cancelada com sucesso." });
+  }
+
+  public static async markSeen(req: Request, res: Response, next: NextFunction): Promise<void> {
+    const { endpoint, sundayIsoDate } = req.body as { endpoint?: unknown; sundayIsoDate?: unknown };
+
+    if (!endpoint || typeof endpoint !== "string") {
+      res.status(400).json({ error: "O campo endpoint é obrigatório." });
+      return;
+    }
+
+    if (!sundayIsoDate || typeof sundayIsoDate !== "string") {
+      res.status(400).json({ error: "O campo sundayIsoDate é obrigatório." });
+      return;
+    }
+
+    await new PushService().markBookletSeen(endpoint, sundayIsoDate);
+    res.status(200).json({ message: "Visualização registrada." });
+  }
+
+  public static async cronBookletCheck(req: Request, res: Response, next: NextFunction): Promise<void> {
+    const result = await runSundayBookletAvailabilityCheck();
+    res.status(200).json(result);
+  }
+
+  public static async cronBookletReminder(req: Request, res: Response, next: NextFunction): Promise<void> {
+    const result = await runSundayBookletDailyReminders();
+    res.status(200).json(result);
   }
 }

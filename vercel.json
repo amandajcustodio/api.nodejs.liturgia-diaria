@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/cron/push-booklet-check",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/cron/push-booklet-reminder",
+      "schedule": "0 12 * * *"
+    }
+  ]
+}
