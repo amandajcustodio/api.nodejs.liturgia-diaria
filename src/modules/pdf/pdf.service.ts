@@ -14,6 +14,11 @@ type PdfSource = {
   datePattern: "dd.mm.yyyy" | "ddmmyy"
 }
 
+type FolhetoListingEntry = {
+  url: string,
+  title: string
+}
+
 export class PdfService {
   private static readonly PDF_SOURCE: PdfSource = {
     categoryUrl: "https://paroquiasaojosebp.com/categorias/folheto-liturgico/",
@@ -181,6 +186,12 @@ export class PdfService {
   }
 
   private extractPostUrlByDate(html: string, formattedDate: string, baseUrl: string): string | null {
+    const listingMatch = this.findPostUrlInListing(html, formattedDate, baseUrl);
+
+    if (listingMatch) {
+      return listingMatch;
+    }
+
     const dataHrefMatch = new RegExp(`data-href=["']([^"']*${formattedDate}[^"']*)["']`, "i").exec(html);
 
     if (dataHrefMatch?.[1]) {
@@ -211,45 +222,118 @@ export class PdfService {
     return null;
   }
 
+  private parseFolhetoListingEntries(html: string, baseUrl: string): FolhetoListingEntry[] {
+    const entries: FolhetoListingEntry[] = [];
+    const seenUrls = new Set<string>();
+
+    const addEntry = (url: string, title = "") => {
+      if (!url || !/folheto/i.test(url)) {
+        return;
+      }
+
+      const absoluteUrl = this.toAbsoluteUrl(url, baseUrl);
+
+      if (seenUrls.has(absoluteUrl) || absoluteUrl.includes("/categorias/folheto-liturgico")) {
+        return;
+      }
+
+      seenUrls.add(absoluteUrl);
+      entries.push({ url: absoluteUrl, title });
+    };
+
+    const jsonLdRegex = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+    let jsonLdMatch = jsonLdRegex.exec(html);
+
+    while (jsonLdMatch) {
+      try {
+        const parsed = JSON.parse(jsonLdMatch[1] ?? "") as Record<string, unknown>;
+        const graphs = Array.isArray(parsed["@graph"]) ? parsed["@graph"] : [parsed];
+
+        for (const graph of graphs) {
+          if (!graph || typeof graph !== "object") {
+            continue;
+          }
+
+          const mainEntity = (graph as { mainEntity?: { itemListElement?: Array<{ url?: string }> } }).mainEntity;
+          const items = mainEntity?.itemListElement;
+
+          if (!Array.isArray(items)) {
+            continue;
+          }
+
+          for (const item of items) {
+            if (typeof item?.url === "string") {
+              addEntry(item.url);
+            }
+          }
+        }
+      } catch {
+        // Ignore invalid JSON-LD blocks.
+      }
+
+      jsonLdMatch = jsonLdRegex.exec(html);
+    }
+
+    const dataHrefRegex = /data-href=["']([^"']+)["']/gi;
+    let dataHrefMatch = dataHrefRegex.exec(html);
+
+    while (dataHrefMatch) {
+      addEntry(dataHrefMatch[1] ?? "");
+      dataHrefMatch = dataHrefRegex.exec(html);
+    }
+
+    const headingRegex = /<h2[^>]*class=["'][^"']*elementor-heading-title[^"']*["'][^>]*>([^<]+)<\/h2>/gi;
+    let headingMatch = headingRegex.exec(html);
+
+    while (headingMatch) {
+      const title = this.stripTags(headingMatch[1] ?? "");
+      const dateMatch = /(\d{6})\b/.exec(title);
+
+      if (dateMatch?.[1]) {
+        for (const entry of entries) {
+          if (entry.url.includes(dateMatch[1])) {
+            entry.title = title;
+          }
+        }
+      }
+
+      headingMatch = headingRegex.exec(html);
+    }
+
+    return entries;
+  }
+
+  private findPostUrlInListing(html: string, formattedDate: string, baseUrl: string): string | null {
+    const normalizedDate = formattedDate.toLowerCase();
+
+    for (const entry of this.parseFolhetoListingEntries(html, baseUrl)) {
+      const normalized = this.normalizeText(`${entry.title} ${entry.url}`);
+
+      if (entry.url.includes(formattedDate) || normalized.includes(normalizedDate)) {
+        return entry.url;
+      }
+    }
+
+    return null;
+  }
+
   private extractSundayPostUrlFallback(html: string, date: DateParts, source: PdfSource): string | null {
     const dayToken = this.formatDateForSource(date, source.datePattern);
     const alternativeDayToken = `${String(date.day).padStart(2, "0")}.${String(date.month).padStart(2, "0")}.${date.year}`;
-    const anchorRegex = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-    const seenUrls = new Set<string>();
     const sundayCandidates: string[] = [];
 
-    let match = anchorRegex.exec(html);
-
-    while (match) {
-      const href = match[1] ?? "";
-      const anchorText = this.stripTags(match[2] ?? "");
-      const absoluteHref = this.toAbsoluteUrl(href, source.categoryUrl);
-
-      if (seenUrls.has(absoluteHref)) {
-        match = anchorRegex.exec(html);
-        continue;
-      }
-
-      seenUrls.add(absoluteHref);
-
-      if (absoluteHref.includes("/categorias/folheto-liturgico")) {
-        match = anchorRegex.exec(html);
-        continue;
-      }
-
-      const normalized = this.normalizeText(`${anchorText} ${absoluteHref}`);
+    for (const entry of this.parseFolhetoListingEntries(html, source.categoryUrl)) {
+      const normalized = this.normalizeText(`${entry.title} ${entry.url}`);
 
       if (!normalized.includes("folheto") || !normalized.includes("domingo")) {
-        match = anchorRegex.exec(html);
         continue;
       }
 
       if (normalized.includes(dayToken.toLowerCase()) || normalized.includes(alternativeDayToken.toLowerCase())) {
-        return absoluteHref;
+        return entry.url;
       }
 
-      sundayCandidates.push(absoluteHref);
-      match = anchorRegex.exec(html);
+      sundayCandidates.push(entry.url);
     }
 
     return sundayCandidates[0] ?? null;
@@ -258,8 +342,8 @@ export class PdfService {
   private extractFirstPdfUrl(html: string, baseUrl: string): string | null {
     const normalizedHtml = html.replace(/\\\//g, "/");
     const pdfAttributeMatchers = [
-      /href=["']([^"']+\.pdf(?:\?[^"']*)?)["']/i,
-      /["']source["']\s*:\s*["']([^"']+\.pdf(?:\?[^"']*)?)["']/i
+      /["']source["']\s*:\s*["']([^"']+\.pdf(?:\?[^"']*)?)["']/i,
+      /href=["']([^"']+\.pdf(?:\?[^"']*)?)["']/i
     ];
 
     for (const matcher of pdfAttributeMatchers) {
@@ -281,8 +365,18 @@ export class PdfService {
       .trim();
   }
 
+  private decodeJsStringEscapes(value: string): string {
+    return value
+      .replace(/\\\//g, "/")
+      .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+      .replace(/\\n/g, "\n")
+      .replace(/\\r/g, "\r")
+      .replace(/\\t/g, "\t")
+      .replace(/\\\\/g, "\\");
+  }
+
   private toAbsoluteUrl(url: string, baseUrl: string): string {
-    return new URL(url, baseUrl).toString();
+    return new URL(this.decodeJsStringEscapes(url), baseUrl).toString();
   }
 
   private normalizeText(value: string): string {
