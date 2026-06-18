@@ -2,7 +2,8 @@ import { Missallete, LiturgyMetadata } from "../../shared/models/base.model";
 import { addDays, DateParts, formatIsoDate, getApiTodayDateParts } from "../../shared/utils/api-date.util";
 
 export class LiturgyService {
-  private static readonly BASE_URL = "https://www.liriocatolico.com.br/liturgia_diaria/dia";
+  private static readonly LIRIO_BASE_URL = "https://www.liriocatolico.com.br/liturgia_diaria/dia";
+  private static readonly PADRE_PAULO_RICARDO_BASE_URL = "https://padrepauloricardo.org/liturgia";
   private static readonly REQUEST_TIMEOUT_MS = 12000;
 
   public async getToday(): Promise<Missallete | null> {
@@ -54,7 +55,28 @@ export class LiturgyService {
     return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
   }
 
-  private extractLiturgyData(html: string): { content: string, metadata: LiturgyMetadata } {
+  private mapPadrePauloRicardoColor(color: string): string {
+    const normalized = color.trim().toLowerCase();
+    const colorMap: Record<string, string> = {
+      green: "Verde",
+      white: "Branco",
+      red: "Vermelho",
+      purple: "Roxo",
+      rose: "Rosa"
+    };
+
+    return colorMap[normalized] ?? this.capitalizeFirst(color);
+  }
+
+  private sanitizeReadingHtml(html: string): string {
+    return html
+      .replace(/<img\b[^>]*>/gi, "")
+      .replace(/<a\b[^>]*>([\s\S]*?)<\/a>/gi, "$1")
+      .replace(/\sstyle="[^"]*"/gi, "")
+      .trim();
+  }
+
+  private extractLiturgyDataFromLirio(html: string): { content: string, metadata: LiturgyMetadata } {
     const seasonMatch = html.match(/<div\b[^>]*class="liturgy-title"[^>]*>([\s\S]*?)<\/div>/i);
     const season = seasonMatch ? this.stripTags(seasonMatch[1]).trim() || null : null;
 
@@ -71,7 +93,56 @@ export class LiturgyService {
     return { content, metadata: { season, color } };
   }
 
-  private async fetchHtml(url: string): Promise<string | null> {
+  private extractLiturgyDataFromPadrePauloRicardo(html: string): { content: string, metadata: LiturgyMetadata } | null {
+    const seasonMatch = html.match(/<div class="liturgy-title"[^>]*>([^<]+)<\/div>/i);
+    const season = seasonMatch ? this.stripTags(seasonMatch[1]).trim() || null : null;
+
+    const colorMatch = html.match(/class="liturgy-color\s+(\w+)"/i);
+    const color = colorMatch ? this.mapPadrePauloRicardoColor(colorMatch[1]) : null;
+
+    const readingBlocks: string[] = [];
+    const accordionRegex = /<div class="reading-accordion"[^>]*data-reading-index="\d+"[^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>\s*<\/div>/gi;
+    let match = accordionRegex.exec(html);
+
+    while (match) {
+      const blockHtml = match[1] ?? "";
+      const typeMatch = blockHtml.match(/<div class="reading-type">([^<]+)<\/div>/i);
+      const titleMatch = blockHtml.match(/<div class="reading-title"[^>]*>([\s\S]*?)<\/div>/i);
+      const bodyMatch = blockHtml.match(/<div class="reading-body[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/i);
+
+      if (!typeMatch?.[1] || !bodyMatch?.[1]) {
+        match = accordionRegex.exec(html);
+        continue;
+      }
+
+      const type = this.stripTags(typeMatch[1]);
+      const title = titleMatch?.[1] ? this.stripTags(titleMatch[1]) : "";
+      const body = this.sanitizeReadingHtml(bodyMatch[1]);
+
+      readingBlocks.push(`
+        <article class="reading">
+          <header>
+            <h3 class="reading-title">${type}</h3>
+            ${title ? `<p class="reading-subtitle">${title}</p>` : ""}
+          </header>
+          <div class="reading-content">${body}</div>
+        </article>
+      `);
+
+      match = accordionRegex.exec(html);
+    }
+
+    if (!readingBlocks.length) {
+      return null;
+    }
+
+    return {
+      content: readingBlocks.join("\n"),
+      metadata: { season, color }
+    };
+  }
+
+  private async fetchHtml(url: string, refererUrl: string): Promise<string | null> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
       controller.abort();
@@ -85,7 +156,7 @@ export class LiturgyService {
           "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
           "Cache-Control": "no-cache",
           Pragma: "no-cache",
-          Referer: "https://www.liriocatolico.com.br/",
+          Referer: refererUrl,
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
         }
       });
@@ -112,13 +183,13 @@ export class LiturgyService {
   }
 
   private looksLikeBlockedPage(html: string): boolean {
-    const blockedSignals = /access denied|forbidden|cloudflare|captcha|security check|attention required|verify you are human/i;
+    const blockedSignals = /access denied|forbidden|cloudflare|security check|attention required|verify you are human|captcha/i;
 
     if (!blockedSignals.test(html)) {
       return false;
     }
 
-    const hasLiturgyMarkers = /class="liturgy-title"|primeira\s+leitura|salmo\s+responsorial|evangelho/i.test(html);
+    const hasLiturgyMarkers = /class="liturgy-title"|primeira\s+leitura|salmo\s+responsorial|evangelho|reading-type/i.test(html);
 
     return !hasLiturgyMarkers;
   }
@@ -133,13 +204,23 @@ export class LiturgyService {
   }
 
   private async getByDateParts(date: DateParts): Promise<Missallete | null> {
-    const html = await this.fetchFirstAvailableHtml(date);
+    const lirioMissallete = await this.getByDatePartsFromLirio(date);
+
+    if (lirioMissallete) {
+      return lirioMissallete;
+    }
+
+    return this.getByDatePartsFromPadrePauloRicardo(date);
+  }
+
+  private async getByDatePartsFromLirio(date: DateParts): Promise<Missallete | null> {
+    const html = await this.fetchFirstAvailableLirioHtml(date);
 
     if (!html) {
       return null;
     }
 
-    const { content, metadata } = this.extractLiturgyData(html);
+    const { content, metadata } = this.extractLiturgyDataFromLirio(html);
 
     return {
       type: "html",
@@ -149,13 +230,35 @@ export class LiturgyService {
     };
   }
 
-  private async fetchFirstAvailableHtml(date: DateParts): Promise<string | null> {
-    const urls = this.buildLiturgyUrls(date);
+  private async getByDatePartsFromPadrePauloRicardo(date: DateParts): Promise<Missallete | null> {
+    const url = this.buildPadrePauloRicardoUrl(date);
+    const html = await this.fetchHtml(url, "https://padrepauloricardo.org/");
+
+    if (!html) {
+      return null;
+    }
+
+    const extracted = this.extractLiturgyDataFromPadrePauloRicardo(html);
+
+    if (!extracted) {
+      return null;
+    }
+
+    return {
+      type: "html",
+      date: formatIsoDate(date),
+      content: extracted.content,
+      metadata: extracted.metadata
+    };
+  }
+
+  private async fetchFirstAvailableLirioHtml(date: DateParts): Promise<string | null> {
+    const urls = this.buildLirioUrls(date);
 
     for (const url of urls) {
-      const html = await this.fetchHtml(url);
+      const html = await this.fetchHtml(url, "https://www.liriocatolico.com.br/");
 
-      if (html && this.isValidLiturgyHtml(html)) {
+      if (html && this.isValidLirioLiturgyHtml(html)) {
         return html;
       }
     }
@@ -163,7 +266,7 @@ export class LiturgyService {
     return null;
   }
 
-  private isValidLiturgyHtml(html: string): boolean {
+  private isValidLirioLiturgyHtml(html: string): boolean {
     if (/class="liturgy-title"/i.test(html)) {
       return true;
     }
@@ -174,7 +277,7 @@ export class LiturgyService {
     return hasMainContent && hasReadings;
   }
 
-  private buildLiturgyUrls(date: DateParts): string[] {
+  private buildLirioUrls(date: DateParts): string[] {
     const fullYear = String(date.year);
     const shortYear = fullYear.slice(2);
     const month = String(date.month);
@@ -183,11 +286,17 @@ export class LiturgyService {
     const paddedDay = day.padStart(2, "0");
 
     const candidates = [
-      `${LiturgyService.BASE_URL}/${shortYear}/${month}/${day}/`,
-      `${LiturgyService.BASE_URL}/${shortYear}/${paddedMonth}/${paddedDay}/`
+      `${LiturgyService.LIRIO_BASE_URL}/${shortYear}/${month}/${day}/`,
+      `${LiturgyService.LIRIO_BASE_URL}/${shortYear}/${paddedMonth}/${paddedDay}/`
     ];
 
     return [...new Set(candidates)];
   }
 
+  private buildPadrePauloRicardoUrl(date: DateParts): string {
+    const day = String(date.day).padStart(2, "0");
+    const month = String(date.month).padStart(2, "0");
+
+    return `${LiturgyService.PADRE_PAULO_RICARDO_BASE_URL}/${day}-${month}-${date.year}`;
+  }
 }

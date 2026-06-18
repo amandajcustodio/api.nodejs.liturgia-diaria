@@ -44,13 +44,18 @@ export class MissalleteService {
       return this.attachMeditation(await this.getSundayToday(today));
     }
 
-    const pdfMissallete = await new PdfService().getToday();
+    const pdfService = new PdfService();
+    const [pdfMissallete, liturgyMissallete] = await Promise.all([
+      pdfService.getToday(),
+      liturgyService.getToday()
+    ]);
 
     if (pdfMissallete) {
-      return this.attachMeditation(pdfMissallete);
+      return this.attachMeditation({
+        ...pdfMissallete,
+        metadata: pdfMissallete.metadata ?? liturgyMissallete?.metadata
+      });
     }
-
-    const liturgyMissallete = await liturgyService.getToday();
 
     if (liturgyMissallete) {
       return this.attachMeditation(liturgyMissallete);
@@ -66,12 +71,19 @@ export class MissalleteService {
   }
 
   private async attachMeditation(missallete: Missallete): Promise<Missallete> {
-    const meditation = await new MeditationService().getByIsoDate(missallete.date);
+    try {
+      const meditation = await new MeditationService().getByIsoDate(missallete.date);
 
-    return {
-      ...missallete,
-      meditation
-    };
+      return {
+        ...missallete,
+        meditation
+      };
+    } catch {
+      return {
+        ...missallete,
+        meditation: null
+      };
+    }
   }
 
   private async attachMeditationToResponse(response: MissalleteResponse): Promise<MissalleteResponse> {
