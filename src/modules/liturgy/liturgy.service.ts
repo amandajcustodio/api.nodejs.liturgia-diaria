@@ -1,5 +1,11 @@
 import { Missallete, LiturgyMetadata } from "../../shared/models/base.model";
 import { addDays, DateParts, formatIsoDate, getApiTodayDateParts } from "../../shared/utils/api-date.util";
+import {
+  buildWordOfLordResponse,
+  formatReadingBodyHtml,
+  normalizeGospelProclamation,
+  sanitizeLirioMainContent
+} from "../../shared/utils/reading-html.util";
 
 export class LiturgyService {
   private static readonly LIRIO_BASE_URL = "https://www.liriocatolico.com.br/liturgia_diaria/dia";
@@ -62,12 +68,42 @@ export class LiturgyService {
     return colorMap[normalized] ?? this.capitalizeFirst(color);
   }
 
-  private sanitizeReadingHtml(html: string): string {
-    return html
-      .replace(/<img\b[^>]*>/gi, "")
-      .replace(/<a\b[^>]*>([\s\S]*?)<\/a>/gi, "$1")
-      .replace(/\sstyle="[^"]*"/gi, "")
-      .trim();
+  private sanitizeReadingHtml(html: string, readingType = ""): string {
+    return formatReadingBodyHtml(html, readingType);
+  }
+
+  private buildReadingArticle(type: string, title: string, body: string): string {
+    const isGospel = /evangelho/i.test(type);
+    const isFirstReading = /primeira\s+leitura/i.test(type);
+    const articleClass = isGospel ? "reading gospel-section" : "reading";
+
+    let headerExtra = "";
+
+    if (isGospel && title) {
+      headerExtra = `<cite class="reading-reference">${normalizeGospelProclamation(title)}</cite>`;
+    } else if (isFirstReading && title) {
+      headerExtra = `<cite class="reading-reference">${title}</cite>`;
+    } else if (title) {
+      headerExtra = `<p class="reading-subtitle">${title}</p>`;
+    }
+
+    let readingBody = body;
+
+    if (isFirstReading) {
+      readingBody = `${body}\n${buildWordOfLordResponse("reading")}`;
+    } else if (isGospel) {
+      readingBody = `${body}\n${buildWordOfLordResponse("gospel")}`;
+    }
+
+    return `
+      <article class="${articleClass}">
+        <header>
+          <h3 class="reading-title">${type}</h3>
+          ${headerExtra}
+        </header>
+        <div class="reading-content">${readingBody}</div>
+      </article>
+    `;
   }
 
   private extractLiturgyDataFromLirio(html: string): { content: string, metadata: LiturgyMetadata } {
@@ -80,9 +116,7 @@ export class LiturgyService {
     const mainMatch = html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i);
     let content = mainMatch ? mainMatch[1] : html;
 
-    content = content
-      .replace(/<img\b[^>]*>/gi, "")
-      .replace(/<a\b[^>]*>([\s\S]*?)<\/a>/gi, "$1");
+    content = sanitizeLirioMainContent(content);
 
     return { content, metadata: { season, color } };
   }
@@ -111,17 +145,9 @@ export class LiturgyService {
 
       const type = this.stripTags(typeMatch[1]);
       const title = titleMatch?.[1] ? this.stripTags(titleMatch[1]) : "";
-      const body = this.sanitizeReadingHtml(bodyMatch[1]);
+      const body = this.sanitizeReadingHtml(bodyMatch[1], type);
 
-      readingBlocks.push(`
-        <article class="reading">
-          <header>
-            <h3 class="reading-title">${type}</h3>
-            ${title ? `<p class="reading-subtitle">${title}</p>` : ""}
-          </header>
-          <div class="reading-content">${body}</div>
-        </article>
-      `);
+      readingBlocks.push(this.buildReadingArticle(type, title, body));
 
       match = accordionRegex.exec(html);
     }
@@ -138,15 +164,8 @@ export class LiturgyService {
           continue;
         }
 
-        const body = this.sanitizeReadingHtml(fallbackMatch[2] ?? "");
-        readingBlocks.push(`
-          <article class="reading">
-            <header>
-              <h3 class="reading-title">${type}</h3>
-            </header>
-            <div class="reading-content">${body}</div>
-          </article>
-        `);
+        const body = this.sanitizeReadingHtml(fallbackMatch[2] ?? "", type);
+        readingBlocks.push(this.buildReadingArticle(type, "", body));
         fallbackMatch = fallbackRegex.exec(html);
       }
     }
@@ -233,7 +252,7 @@ export class LiturgyService {
       this.getByDatePartsFromLirio(date)
     ]);
 
-    return pprMissallete ?? lirioMissallete;
+    return lirioMissallete ?? pprMissallete;
   }
 
   private async getByDatePartsFromLirio(date: DateParts): Promise<Missallete | null> {

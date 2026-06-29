@@ -206,13 +206,26 @@ export class MeditationService {
     return null;
   }
 
-  private sanitizeMeditationHtml(html: string): string {
+  private stripRepeatedGospelFromMeditation(html: string): string {
     return html
+      .replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/i, "")
+      .replace(
+        /^<p\b[^>]*>[\s\S]*?Evangelho\s+de\s+(?:Nosso\s+Senhor\s+)?Jesus\s+Cristo[\s\S]*?<\/p>/i,
+        ""
+      )
+      .replace(/^(?:\s*<p>\s*<\/p>\s*)+/i, "")
+      .trim();
+  }
+
+  private sanitizeMeditationHtml(html: string): string {
+    const cleaned = html
       .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
       .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
       .replace(/<a\b[^>]*>/gi, "")
       .replace(/<\/a>/gi, "")
       .replace(/\sstyle="[^"]*"/gi, "")
       .trim();
+
+    return this.stripRepeatedGospelFromMeditation(cleaned);
   }
 }

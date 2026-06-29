@@ -8,6 +8,11 @@ import {
   getDatePartsInTimeZone,
   getWeekday
 } from "../../shared/utils/api-date.util";
+import {
+  buildDdMmYyVariants,
+  extractDateDigitTokens,
+  matchesDateFuzzy
+} from "../../shared/utils/pdf-date-match.util";
 
 type PdfSource = {
   categoryUrl: string,
@@ -65,7 +70,7 @@ export class PdfService {
       return null;
     }
 
-    const postUrl = this.extractPostUrlByDate(categoryHtml, formattedDate, source.categoryUrl);
+    const postUrl = this.extractPostUrlByDate(categoryHtml, formattedDate, source.categoryUrl, date);
 
     if (!postUrl) {
       return null;
@@ -185,17 +190,26 @@ export class PdfService {
     console.warn(`[PdfService] ${reason}${statusLabel} url=${url}`);
   }
 
-  private extractPostUrlByDate(html: string, formattedDate: string, baseUrl: string): string | null {
-    const listingMatch = this.findPostUrlInListing(html, formattedDate, baseUrl);
+  private extractPostUrlByDate(
+    html: string,
+    formattedDate: string,
+    baseUrl: string,
+    date: DateParts
+  ): string | null {
+    const listingMatch = this.findPostUrlInListing(html, formattedDate, baseUrl, date);
 
     if (listingMatch) {
       return listingMatch;
     }
 
-    const dataHrefMatch = new RegExp(`data-href=["']([^"']*${formattedDate}[^"']*)["']`, "i").exec(html);
+    const dateVariants = buildDdMmYyVariants(date);
 
-    if (dataHrefMatch?.[1]) {
-      return this.toAbsoluteUrl(dataHrefMatch[1], baseUrl);
+    for (const variant of dateVariants) {
+      const dataHrefMatch = new RegExp(`data-href=["']([^"']*${variant}[^"']*)["']`, "i").exec(html);
+
+      if (dataHrefMatch?.[1]) {
+        return this.toAbsoluteUrl(dataHrefMatch[1], baseUrl);
+      }
     }
 
     const anchorRegex = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
@@ -205,18 +219,24 @@ export class PdfService {
     while (match) {
       const href = match[1] ?? "";
       const anchorText = this.stripTags(match[2] ?? "");
+      const combinedText = `${href} ${anchorText}`;
 
-      if (href.includes(formattedDate) || anchorText.includes(formattedDate)) {
+      if (
+        dateVariants.some((variant) => combinedText.includes(variant))
+        || extractDateDigitTokens(combinedText).some((token) => matchesDateFuzzy(date, token))
+      ) {
         return this.toAbsoluteUrl(href, baseUrl);
       }
 
       match = anchorRegex.exec(html);
     }
 
-    const postUrlMatch = new RegExp(`https?:\\/\\/[^"'\\s>]*${formattedDate}[^"'\\s>]*\\/?`, "i").exec(html);
+    for (const variant of dateVariants) {
+      const postUrlMatch = new RegExp(`https?:\\/\\/[^"'\\s>]*${variant}[^"'\\s>]*\\/?`, "i").exec(html);
 
-    if (postUrlMatch?.[0]) {
-      return this.toAbsoluteUrl(postUrlMatch[0], baseUrl);
+      if (postUrlMatch?.[0]) {
+        return this.toAbsoluteUrl(postUrlMatch[0], baseUrl);
+      }
     }
 
     return null;
@@ -287,11 +307,11 @@ export class PdfService {
 
     while (headingMatch) {
       const title = this.stripTags(headingMatch[1] ?? "");
-      const dateMatch = /(\d{6})\b/.exec(title);
+      const dateMatch = /(\d{5,6})\b/.exec(title);
 
       if (dateMatch?.[1]) {
         for (const entry of entries) {
-          if (entry.url.includes(dateMatch[1])) {
+          if (entry.url.includes(dateMatch[1]) || entry.title.includes(dateMatch[1])) {
             entry.title = title;
           }
         }
@@ -303,13 +323,30 @@ export class PdfService {
     return entries;
   }
 
-  private findPostUrlInListing(html: string, formattedDate: string, baseUrl: string): string | null {
+  private findPostUrlInListing(
+    html: string,
+    formattedDate: string,
+    baseUrl: string,
+    date: DateParts
+  ): string | null {
     const normalizedDate = formattedDate.toLowerCase();
+    const dateVariants = buildDdMmYyVariants(date).map((variant) => variant.toLowerCase());
 
     for (const entry of this.parseFolhetoListingEntries(html, baseUrl)) {
-      const normalized = this.normalizeText(`${entry.title} ${entry.url}`);
+      const combinedText = `${entry.title} ${entry.url}`;
+      const normalized = this.normalizeText(combinedText);
 
-      if (entry.url.includes(formattedDate) || normalized.includes(normalizedDate)) {
+      const hasExactMatch = entry.url.includes(formattedDate)
+        || normalized.includes(normalizedDate)
+        || dateVariants.some((variant) => entry.url.includes(variant) || normalized.includes(variant));
+
+      if (hasExactMatch) {
+        return entry.url;
+      }
+
+      const dateTokens = extractDateDigitTokens(combinedText);
+
+      if (dateTokens.some((token) => matchesDateFuzzy(date, token))) {
         return entry.url;
       }
     }
@@ -318,18 +355,26 @@ export class PdfService {
   }
 
   private extractSundayPostUrlFallback(html: string, date: DateParts, source: PdfSource): string | null {
-    const dayToken = this.formatDateForSource(date, source.datePattern);
-    const alternativeDayToken = `${String(date.day).padStart(2, "0")}.${String(date.month).padStart(2, "0")}.${date.year}`;
+    const dateVariants = buildDdMmYyVariants(date).map((variant) => variant.toLowerCase());
     const sundayCandidates: string[] = [];
 
     for (const entry of this.parseFolhetoListingEntries(html, source.categoryUrl)) {
-      const normalized = this.normalizeText(`${entry.title} ${entry.url}`);
+      const combinedText = `${entry.title} ${entry.url}`;
+      const normalized = this.normalizeText(combinedText);
 
       if (!normalized.includes("folheto") || !normalized.includes("domingo")) {
         continue;
       }
 
-      if (normalized.includes(dayToken.toLowerCase()) || normalized.includes(alternativeDayToken.toLowerCase())) {
+      const hasExactDateMatch = dateVariants.some((variant) => normalized.includes(variant));
+
+      if (hasExactDateMatch) {
+        return entry.url;
+      }
+
+      const hasFuzzyDateMatch = extractDateDigitTokens(combinedText).some((token) => matchesDateFuzzy(date, token));
+
+      if (hasFuzzyDateMatch) {
         return entry.url;
       }
 
