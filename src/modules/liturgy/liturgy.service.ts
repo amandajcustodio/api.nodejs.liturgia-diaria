@@ -10,7 +10,7 @@ import {
 export class LiturgyService {
   private static readonly LIRIO_BASE_URL = "https://www.liriocatolico.com.br/liturgia_diaria/dia";
   private static readonly PADRE_PAULO_RICARDO_BASE_URL = "https://padrepauloricardo.org/liturgia";
-  private static readonly REQUEST_TIMEOUT_MS = process.env.VERCEL ? 8000 : 12000;
+  private static readonly REQUEST_TIMEOUT_MS = process.env.VERCEL ? 12000 : 12000;
 
   public async getToday(): Promise<Missallete | null> {
     const baseDate = getApiTodayDateParts();
@@ -180,16 +180,20 @@ export class LiturgyService {
     };
   }
 
-  private async fetchHtml(url: string, refererUrl: string): Promise<string | null> {
+  private async fetchHtml(url: string, refererUrl: string, options: { minimalHeaders?: boolean } = {}): Promise<string | null> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
       controller.abort();
     }, LiturgyService.REQUEST_TIMEOUT_MS);
 
-    try {
-      const response = await fetch(url, {
-        signal: controller.signal,
-        headers: {
+    const headers: Record<string, string> = options.minimalHeaders
+      ? {
+          Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "pt-BR,pt;q=0.9",
+          Referer: refererUrl,
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        }
+      : {
           Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
           "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
           "Cache-Control": "no-cache",
@@ -200,7 +204,12 @@ export class LiturgyService {
           "Sec-Fetch-Site": "none",
           "Upgrade-Insecure-Requests": "1",
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-        }
+        };
+
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers
       });
 
       if (!response.ok) {
@@ -296,11 +305,16 @@ export class LiturgyService {
 
   private async fetchFirstAvailableLirioHtml(date: DateParts): Promise<string | null> {
     const urls = this.buildLirioUrls(date);
-    const htmlPages = await Promise.all(
-      urls.map((url) => this.fetchHtml(url, "https://www.liriocatolico.com.br/"))
-    );
 
-    return htmlPages.find((html) => html && this.isValidLirioLiturgyHtml(html)) ?? null;
+    for (const url of urls) {
+      const html = await this.fetchHtml(url, "https://www.liriocatolico.com.br/", { minimalHeaders: true });
+
+      if (html && this.isValidLirioLiturgyHtml(html)) {
+        return html;
+      }
+    }
+
+    return null;
   }
 
   private isValidLirioLiturgyHtml(html: string): boolean {

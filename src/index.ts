@@ -23,7 +23,7 @@ if (!process.env.VERCEL) {
   app.listen(3000);
 
   // Local dev: mirror Vercel cron schedules
-  cron.schedule("0 * * * *", async () => {
+  cron.schedule("0 10 * * *", async () => {
     try {
       await runSundayBookletAvailabilityCheck();
     } catch {
