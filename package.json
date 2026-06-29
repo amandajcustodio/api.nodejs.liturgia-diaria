@@ -2,9 +2,10 @@
   "name": "api.nodejs.liturgia-diaria",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "lib/index.js",
   "scripts": {
     "build": "tsc",
+    "vercel-build": "tsc",
     "start": "npx tsc-watch --onSuccess \"node ./lib/index.js\""
   },
   "keywords": [],
