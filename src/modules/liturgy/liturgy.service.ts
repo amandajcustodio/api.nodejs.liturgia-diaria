@@ -2,6 +2,7 @@ import { Missallete, LiturgyMetadata } from "../../shared/models/base.model";
 import { addDays, DateParts, formatIsoDate, getApiTodayDateParts } from "../../shared/utils/api-date.util";
 import {
   buildWordOfLordResponse,
+  enrichPprLiturgyWithLirio,
   formatReadingBodyHtml,
   normalizeGospelProclamation,
   sanitizeLirioMainContent
@@ -72,19 +73,57 @@ export class LiturgyService {
     return formatReadingBodyHtml(html, readingType);
   }
 
-  private buildReadingArticle(type: string, title: string, body: string): string {
+  private parsePprReadingHeader(blockHtml: string): { subtitle: string; reference: string } {
+    const titleHtml =
+      blockHtml.match(/<div class="reading-title"[^>]*>([\s\S]*?)<\/div>/i)?.[1]
+      ?? blockHtml.match(/<div class="reading-refrain"[^>]*>([\s\S]*?)<\/div>/i)?.[1]
+      ?? "";
+
+    const referenceMatch = titleHtml.match(/<span class="reading-reference"[^>]*>([\s\S]*?)<\/span>/i);
+    const reference = referenceMatch ? this.stripTags(referenceMatch[1]) : "";
+    const subtitle = this.stripTags(titleHtml.replace(/<span class="reading-reference"[\s\S]*$/i, ""));
+
+    return { subtitle, reference };
+  }
+
+  private extractReadingBodyFromBlock(blockHtml: string): string {
+    const openMatch = blockHtml.match(/<div class="reading-body[^"]*"[^>]*>/i);
+
+    if (!openMatch || openMatch.index === undefined) {
+      return "";
+    }
+
+    const afterOpen = blockHtml.slice(openMatch.index + openMatch[0].length);
+    const closedMatch = afterOpen.match(/^([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/i);
+
+    if (closedMatch?.[1]) {
+      return closedMatch[1];
+    }
+
+    return afterOpen.replace(/<\/div>[\s\S]*$/i, "").trim();
+  }
+
+  private buildReadingArticle(type: string, subtitle: string, reference: string, body: string): string {
     const isGospel = /evangelho/i.test(type);
     const isFirstReading = /primeira\s+leitura/i.test(type);
     const articleClass = isGospel ? "reading gospel-section" : "reading";
 
     let headerExtra = "";
 
-    if (isGospel && title) {
-      headerExtra = `<cite class="reading-reference">${normalizeGospelProclamation(title)}</cite>`;
-    } else if (isFirstReading && title) {
-      headerExtra = `<cite class="reading-reference">${title}</cite>`;
-    } else if (title) {
-      headerExtra = `<p class="reading-subtitle">${title}</p>`;
+    if (isGospel) {
+      const proclamation = [subtitle, reference].filter(Boolean).join(" — ");
+
+      if (proclamation) {
+        headerExtra = `<cite class="reading-reference">${normalizeGospelProclamation(proclamation)}</cite>`;
+      }
+    } else if (subtitle) {
+      headerExtra = `<p class="reading-subtitle">${subtitle}</p>`;
+
+      if (reference) {
+        headerExtra += `\n          <cite class="reading-reference">${reference}</cite>`;
+      }
+    } else if (reference) {
+      headerExtra = `<cite class="reading-reference">${reference}</cite>`;
     }
 
     let readingBody = body;
@@ -135,19 +174,28 @@ export class LiturgyService {
     while (match) {
       const blockHtml = match[1] ?? "";
       const typeMatch = blockHtml.match(/<div class="reading-type">([^<]+)<\/div>/i);
-      const titleMatch = blockHtml.match(/<div class="reading-title"[^>]*>([\s\S]*?)<\/div>/i);
-      const bodyMatch = blockHtml.match(/<div class="reading-body[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/i);
 
-      if (!typeMatch?.[1] || !bodyMatch?.[1]) {
+      if (!typeMatch?.[1]) {
         match = accordionRegex.exec(html);
         continue;
       }
 
       const type = this.stripTags(typeMatch[1]);
-      const title = titleMatch?.[1] ? this.stripTags(titleMatch[1]) : "";
-      const body = this.sanitizeReadingHtml(bodyMatch[1], type);
 
-      readingBlocks.push(this.buildReadingArticle(type, title, body));
+      if (/medita/i.test(type)) {
+        match = accordionRegex.exec(html);
+        continue;
+      }
+
+      const { subtitle, reference } = this.parsePprReadingHeader(blockHtml);
+      const body = this.sanitizeReadingHtml(this.extractReadingBodyFromBlock(blockHtml), type);
+
+      if (!body.trim()) {
+        match = accordionRegex.exec(html);
+        continue;
+      }
+
+      readingBlocks.push(this.buildReadingArticle(type, subtitle, reference, body));
 
       match = accordionRegex.exec(html);
     }
@@ -164,8 +212,9 @@ export class LiturgyService {
           continue;
         }
 
+        const { subtitle, reference } = this.parsePprReadingHeader(fallbackMatch[0] ?? "");
         const body = this.sanitizeReadingHtml(fallbackMatch[2] ?? "", type);
-        readingBlocks.push(this.buildReadingArticle(type, "", body));
+        readingBlocks.push(this.buildReadingArticle(type, subtitle, reference, body));
         fallbackMatch = fallbackRegex.exec(html);
       }
     }
@@ -256,29 +305,34 @@ export class LiturgyService {
   }
 
   private async getByDateParts(date: DateParts): Promise<Missallete | null> {
-    const [pprMissallete, lirioMissallete] = await Promise.all([
-      this.getByDatePartsFromPadrePauloRicardo(date),
-      this.getByDatePartsFromLirio(date)
+    const [lirioHtml, pprMissallete] = await Promise.all([
+      this.fetchLirioHtmlRobust(date),
+      this.getByDatePartsFromPadrePauloRicardo(date)
     ]);
 
-    return lirioMissallete ?? pprMissallete;
-  }
+    if (lirioHtml && this.isValidLirioLiturgyHtml(lirioHtml)) {
+      const { content, metadata } = this.extractLiturgyDataFromLirio(lirioHtml);
 
-  private async getByDatePartsFromLirio(date: DateParts): Promise<Missallete | null> {
-    const html = await this.fetchFirstAvailableLirioHtml(date);
-
-    if (!html) {
-      return null;
+      return {
+        type: "html",
+        date: formatIsoDate(date),
+        content,
+        metadata: metadata.season || metadata.color ? metadata : pprMissallete?.metadata ?? metadata
+      };
     }
 
-    const { content, metadata } = this.extractLiturgyDataFromLirio(html);
+    if (pprMissallete) {
+      const content = lirioHtml
+        ? enrichPprLiturgyWithLirio(pprMissallete.content, lirioHtml)
+        : pprMissallete.content;
 
-    return {
-      type: "html",
-      date: formatIsoDate(date),
-      content,
-      metadata
-    };
+      return {
+        ...pprMissallete,
+        content
+      };
+    }
+
+    return null;
   }
 
   private async getByDatePartsFromPadrePauloRicardo(date: DateParts): Promise<Missallete | null> {
@@ -303,18 +357,38 @@ export class LiturgyService {
     };
   }
 
-  private async fetchFirstAvailableLirioHtml(date: DateParts): Promise<string | null> {
+  private async fetchLirioHtmlRobust(date: DateParts): Promise<string | null> {
     const urls = this.buildLirioUrls(date);
+    const headerProfiles: Array<{ minimalHeaders?: boolean; referer?: string }> = [
+      { minimalHeaders: true },
+      { minimalHeaders: false },
+      { minimalHeaders: true, referer: "https://www.liriocatolico.com.br/liturgia_diaria/" }
+    ];
 
     for (const url of urls) {
-      const html = await this.fetchHtml(url, "https://www.liriocatolico.com.br/", { minimalHeaders: true });
+      for (const profile of headerProfiles) {
+        const html = await this.fetchHtml(
+          url,
+          profile.referer ?? "https://www.liriocatolico.com.br/",
+          { minimalHeaders: profile.minimalHeaders }
+        );
 
-      if (html && this.isValidLirioLiturgyHtml(html)) {
-        return html;
+        if (html && (this.hasLirioReadingStructure(html) || this.isValidLirioLiturgyHtml(html))) {
+          return html;
+        }
       }
     }
 
     return null;
+  }
+
+  private hasLirioReadingStructure(html: string): boolean {
+    if (/Página Não Encontrada|404/i.test(html) && !/<main\b/i.test(html)) {
+      return false;
+    }
+
+    return /reading-subtitle|alleluia-section|gospel-section|primeira\s+leitura/i.test(html)
+      && /<main\b[^>]*>[\s\S]*<\/main>/i.test(html);
   }
 
   private isValidLirioLiturgyHtml(html: string): boolean {
@@ -338,7 +412,9 @@ export class LiturgyService {
 
     const candidates = [
       `${LiturgyService.LIRIO_BASE_URL}/${shortYear}/${month}/${day}/`,
-      `${LiturgyService.LIRIO_BASE_URL}/${shortYear}/${paddedMonth}/${paddedDay}/`
+      `${LiturgyService.LIRIO_BASE_URL}/${shortYear}/${paddedMonth}/${paddedDay}/`,
+      `${LiturgyService.LIRIO_BASE_URL}/${shortYear}/${paddedMonth}/${day}/`,
+      `${LiturgyService.LIRIO_BASE_URL}/${shortYear}/${month}/${paddedDay}/`
     ];
 
     return [...new Set(candidates)];

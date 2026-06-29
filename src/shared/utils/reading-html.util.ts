@@ -153,7 +153,121 @@ export function normalizeGospelProclamation(reference: string): string {
     return "";
   }
 
-  return normalized.startsWith("✠") ? normalized : `✠ ${normalized}`;
+  const text = normalized.replace(/^✠\s*/, "").trim();
+
+  return `<span class="gospel-cross" aria-hidden="true">✠</span> ${text}`;
+}
+
+export type LirioLiturgicalEnrichment = {
+  firstReadingSubtitle: string | null;
+  gospelSubtitle: string | null;
+  gospelProclamation: string | null;
+  alleluiaSectionHtml: string | null;
+};
+
+function stripTagsToText(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function extractLiturgicalEnrichmentFromLirio(html: string): LirioLiturgicalEnrichment | null {
+  const mainMatch = html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i);
+  const content = mainMatch ? mainMatch[1] : html;
+
+  if (!/reading-subtitle|alleluia-section|gospel-section/i.test(content)) {
+    return null;
+  }
+
+  const firstReadingSubtitleMatch = content.match(
+    /<h3[^>]*>[\s\S]*?primeira\s+leitura[\s\S]*?<\/h3>\s*<p class="reading-subtitle"[^>]*>([\s\S]*?)<\/p>/i
+  );
+
+  const gospelSubtitleMatch = content.match(
+    /<article[^>]*class="[^"]*gospel-section[^"]*"[^>]*>[\s\S]*?<p class="reading-subtitle"[^>]*>([\s\S]*?)<\/p>/i
+  );
+
+  const gospelReferenceMatch = content.match(
+    /<article[^>]*class="[^"]*gospel-section[^"]*"[^>]*>[\s\S]*?<cite class="reading-reference"[^>]*>([\s\S]*?)<\/cite>/i
+  );
+
+  const alleluiaMatch = content.match(/<section class="alleluia-section"[^>]*>([\s\S]*?)<\/section>/i);
+
+  const gospelProclamationRaw = gospelReferenceMatch?.[1]
+    ? stripTagsToText(gospelReferenceMatch[1])
+    : null;
+
+  return {
+    firstReadingSubtitle: firstReadingSubtitleMatch?.[1] ? stripTagsToText(firstReadingSubtitleMatch[1]) : null,
+    gospelSubtitle: gospelSubtitleMatch?.[1] ? stripTagsToText(gospelSubtitleMatch[1]) : null,
+    gospelProclamation: gospelProclamationRaw || null,
+    alleluiaSectionHtml: alleluiaMatch?.[0] ?? null
+  };
+}
+
+export function enrichPprLiturgyWithLirio(pprContent: string, lirioHtml: string): string {
+  const enrichment = extractLiturgicalEnrichmentFromLirio(lirioHtml);
+
+  if (!enrichment) {
+    return pprContent;
+  }
+
+  let content = pprContent;
+
+  if (enrichment.firstReadingSubtitle) {
+    content = content.replace(
+      /(<article class="reading">\s*<header>\s*<h3 class="reading-title">[^<]*primeira\s+leitura[^<]*<\/h3>)(\s*<cite class="reading-reference">)/i,
+      `$1\n            <p class="reading-subtitle">${escapeHtml(enrichment.firstReadingSubtitle)}</p>$2`
+    );
+
+    content = content.replace(
+      /(<article class="reading">\s*<header>\s*<h3 class="reading-title">[^<]*primeira\s+leitura[^<]*<\/h3>)(\s*<\/header>)/i,
+      `$1\n            <p class="reading-subtitle">${escapeHtml(enrichment.firstReadingSubtitle)}</p>$2`
+    );
+  }
+
+  if (enrichment.alleluiaSectionHtml) {
+    const alleluiaSection = sanitizeLirioAlleluiaSection(enrichment.alleluiaSectionHtml);
+
+    if (!/alleluia-section/i.test(content)) {
+      content = content.replace(
+        /(<article class="reading gospel-section")/i,
+        `${alleluiaSection}\n\n          $1`
+      );
+    }
+  }
+
+  if (enrichment.gospelSubtitle || enrichment.gospelProclamation) {
+    const gospelSubtitleHtml = enrichment.gospelSubtitle
+      ? `<p class="reading-subtitle">${escapeHtml(enrichment.gospelSubtitle)}</p>`
+      : "";
+
+    const gospelReferenceHtml = enrichment.gospelProclamation
+      ? `<cite class="reading-reference">${normalizeGospelProclamation(enrichment.gospelProclamation)}</cite>`
+      : "";
+
+    content = content.replace(
+      /<article class="reading gospel-section">\s*<header>\s*<h3 class="reading-title">[^<]*<\/h3>[\s\S]*?<\/header>/i,
+      `<article class="reading gospel-section">
+        <header>
+          <h3 class="reading-title">Evangelho</h3>
+          ${gospelSubtitleHtml}
+          ${gospelReferenceHtml}
+        </header>`
+    );
+  }
+
+  return content.trim();
+}
+
+function sanitizeLirioAlleluiaSection(sectionHtml: string): string {
+  return sectionHtml
+    .replace(/<img\b[^>]*>/gi, "")
+    .replace(/<a\b[^>]*>([\s\S]*?)<\/a>/gi, "$1")
+    .replace(/<\/br>/gi, "<br>")
+    .trim();
 }
 
 export function sanitizeLirioMainContent(content: string): string {
@@ -165,8 +279,8 @@ export function sanitizeLirioMainContent(content: string): string {
     .replace(/<div class="gospel-icon">\s*<\/div>/gi, "")
     .replace(/<cite class="reading-reference"[^>]*>\s*<\/cite>/gi, "")
     .replace(
-      /(<cite[^>]*class="reading-reference"[^>]*>)\s*Proclamação/gi,
-      "$1✠ Proclamação"
+      /(<cite[^>]*class="reading-reference"[^>]*>)\s*(?:✠\s*)?Proclamação/gi,
+      `$1<span class="gospel-cross" aria-hidden="true">✠</span> Proclamação`
     )
     .trim();
 }
