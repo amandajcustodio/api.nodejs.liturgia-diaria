@@ -307,7 +307,7 @@ export class PdfService {
 
     while (headingMatch) {
       const title = this.stripTags(headingMatch[1] ?? "");
-      const dateMatch = /(\d{5,6})\b/.exec(title);
+      const dateMatch = /(\d{4,8})\b/.exec(title);
 
       if (dateMatch?.[1]) {
         for (const entry of entries) {
